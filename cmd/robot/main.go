@@ -4,9 +4,10 @@
 // "What this deliberately does not do").
 //
 // Run three of them:
-//   go run ./cmd/robot --id r1 &
-//   go run ./cmd/robot --id r2 --flaky &   # drops its connection now and then
-//   go run ./cmd/robot --id r3 &
+//
+//	go run ./cmd/robot --id r1 &
+//	go run ./cmd/robot --id r2 --flaky &   # drops its connection now and then
+//	go run ./cmd/robot --id r3 &
 package main
 
 import (
@@ -26,11 +27,11 @@ import (
 )
 
 type sim struct {
-	id       string
-	x, y     float64
-	tx, ty   float64 // goto target
-	battery  float64
-	status   pb.RobotStatus
+	id      string
+	x, y    float64
+	tx, ty  float64 // goto target
+	battery float64
+	status  pb.RobotStatus
 }
 
 func (s *sim) tick() {
@@ -113,8 +114,11 @@ func session(ctx context.Context, addr string, s *sim, period time.Duration, fla
 		return err
 	}
 
-	// 명령 수신 → 시뮬레이터 적용 → ACK
+	// 수신 고루틴은 Recv만 한다. 시뮬레이터 상태와 cstream.Send는 전부 아래 메인 루프
+	// 한 곳에서만 만진다 — sim에 뮤텍스를 다는 대신 소유권을 한 고루틴에 몰아주는 방식
+	// (-race로 실증된 tick↔handle 경합의 수리).
 	errc := make(chan error, 1)
+	cmdc := make(chan *pb.Command, 8)
 	go func() {
 		for {
 			cmd, err := cstream.Recv()
@@ -122,13 +126,7 @@ func session(ctx context.Context, addr string, s *sim, period time.Duration, fla
 				errc <- err
 				return
 			}
-			ok, detail := s.handle(cmd)
-			log.Printf("[%s] cmd %s(%s) → %v %s", s.id, cmd.Verb, cmd.Arg, ok, detail)
-			if err := cstream.Send(&pb.RobotEvent{Kind: &pb.RobotEvent_Ack{Ack: &pb.CommandAck{
-				CommandId: cmd.CommandId, RobotId: s.id, Ok: ok, Detail: detail}}}); err != nil {
-				errc <- err
-				return
-			}
+			cmdc <- cmd
 		}
 	}()
 
@@ -144,6 +142,13 @@ func session(ctx context.Context, addr string, s *sim, period time.Duration, fla
 			return err
 		case <-ctx.Done():
 			return ctx.Err()
+		case cmd := <-cmdc:
+			ok, detail := s.handle(cmd)
+			log.Printf("[%s] cmd %s(%s) → %v %s", s.id, cmd.Verb, cmd.Arg, ok, detail)
+			if err := cstream.Send(&pb.RobotEvent{Kind: &pb.RobotEvent_Ack{Ack: &pb.CommandAck{
+				CommandId: cmd.CommandId, RobotId: s.id, Ok: ok, Detail: detail}}}); err != nil {
+				return err
+			}
 		case <-tick.C:
 			s.tick()
 			if !deadline.IsZero() && time.Now().After(deadline) {

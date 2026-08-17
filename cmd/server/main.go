@@ -106,14 +106,13 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /fleet", func(w http.ResponseWriter, r *http.Request) {
 		type row struct {
-			RobotID  string        `json:"robot_id"`
-			Online   bool          `json:"online"`
-			AgoMs    int64         `json:"last_seen_ms_ago"`
-			Battery  float64       `json:"battery_pct"`
-			Status   string        `json:"status"`
-			X, Y     float64       `json:"-"`
-			Pos      [2]float64    `json:"pos"`
-			CmdOpen  bool          `json:"command_channel"`
+			RobotID string     `json:"robot_id"`
+			Online  bool       `json:"online"`
+			AgoMs   int64      `json:"last_seen_ms_ago"`
+			Battery float64    `json:"battery_pct"`
+			Status  string     `json:"status"`
+			Pos     [2]float64 `json:"pos"`
+			CmdOpen bool       `json:"command_channel"`
 		}
 		now := time.Now()
 		var out []row

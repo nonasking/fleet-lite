@@ -41,11 +41,13 @@ func (h *Hub) Register(robotID string) (<-chan *pb.Command, func()) {
 	}
 }
 
-// Send queues a command for a connected robot.
+// Send queues a command for a connected robot. The non-blocking send happens while
+// still holding the mutex on purpose: Register/cleanup close channels under the same
+// lock, so releasing it before sending would open a close-vs-send race (panic).
 func (h *Hub) Send(robotID string, cmd *pb.Command) error {
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	ch, ok := h.conns[robotID]
-	h.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("robot %q has no open command channel", robotID)
 	}

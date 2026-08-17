@@ -86,13 +86,7 @@ cmd/server/              gRPC ingress + HTTP panel + offline sweep
 cmd/robot/               virtual robot: state machine, reconnect/backoff, --flaky
 ```
 
-Regenerate after editing the proto:
-
-```bash
-protoc --go_out=gen --go_opt=paths=source_relative \
-       --go-grpc_out=gen --go-grpc_opt=paths=source_relative \
-       --proto_path=proto proto/fleet.proto && mv gen/*.pb.go gen/fleetpb/
-```
+Regenerate after editing the proto (`make gen`), run checks with `make test` (vet + race detector), or bring up the whole demo fleet with `make demo`.
 
 ---
 *Built with [Claude Code](https://claude.com/claude-code).*
