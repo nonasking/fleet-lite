@@ -1,0 +1,72 @@
+// fleet-lite wire contract.
+// Two streams, mirroring what a real fleet needs at minimum:
+//   - StreamTelemetry: robot -> server, long-lived client stream (the "heartbeat + sensor" path)
+//   - CommandChannel:  bidirectional; the robot announces itself (Hello), the server pushes
+//     Commands down, the robot answers with CommandAcks (the "control" path)
+// Design note vs MQTT (see README): gRPC gives us a typed schema, per-connection identity,
+// and backpressure for free — what daijin had to build by hand on top of MQTT topics.
+syntax = "proto3";
+
+package fleet.v1;
+
+option go_package = "github.com/nonasking/fleet-lite/gen/fleetpb";
+
+service FleetService {
+  // Robot pushes telemetry at its own pace; server replies once when the stream ends.
+  rpc StreamTelemetry(stream Telemetry) returns (StreamSummary);
+
+  // First event MUST be a Hello identifying the robot. After that the server may push
+  // Commands at any time and the robot answers each with a CommandAck.
+  rpc CommandChannel(stream RobotEvent) returns (stream Command);
+}
+
+message Telemetry {
+  string robot_id = 1;
+  int64 ts_unix_ms = 2;
+  double battery_pct = 3;   // 0..100
+  Position pos = 4;
+  RobotStatus status = 5;
+  double temp_c = 6;
+}
+
+message Position {
+  double x = 1;             // meters, arbitrary site frame
+  double y = 2;
+  double heading_deg = 3;
+}
+
+enum RobotStatus {
+  ROBOT_STATUS_UNSPECIFIED = 0;
+  IDLE = 1;
+  MOVING = 2;
+  CHARGING = 3;
+  FAULT = 4;
+}
+
+message StreamSummary {
+  uint64 received = 1;      // telemetry messages seen on this stream
+}
+
+message RobotEvent {
+  oneof kind {
+    Hello hello = 1;
+    CommandAck ack = 2;
+  }
+}
+
+message Hello {
+  string robot_id = 1;
+}
+
+message Command {
+  string command_id = 1;
+  string verb = 2;          // goto | stop | charge | clear_fault
+  string arg = 3;           // verb-specific, e.g. "3.5,7.0" for goto
+}
+
+message CommandAck {
+  string command_id = 1;
+  string robot_id = 2;
+  bool ok = 3;
+  string detail = 4;
+}
