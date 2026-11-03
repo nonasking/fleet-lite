@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -94,7 +95,10 @@ func (s *sim) handle(cmd *pb.Command) (bool, string) {
 // session runs one connected session (both streams) until something breaks.
 // 재접속·백오프는 daijin에서와 같은 문제의식: 스트림은 반드시 끊긴다,
 // 원상복구가 기본 동작이어야 한다.
-func session(ctx context.Context, addr string, s *sim, period time.Duration, flaky bool) error {
+func session(parent context.Context, addr string, s *sim, period time.Duration, flaky bool) error {
+	// 세션이 끝나면 스트림과 수신 고루틴도 함께 정리되도록 세션 전용 ctx를 쓴다.
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return err
@@ -126,7 +130,12 @@ func session(ctx context.Context, addr string, s *sim, period time.Duration, fla
 				errc <- err
 				return
 			}
-			cmdc <- cmd
+			// 세션이 끝난 뒤 cmdc가 가득 차 있으면 여기서 영원히 멈추므로 ctx와 함께 기다린다.
+			select {
+			case cmdc <- cmd:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -152,7 +161,7 @@ func session(ctx context.Context, addr string, s *sim, period time.Duration, fla
 		case <-tick.C:
 			s.tick()
 			if !deadline.IsZero() && time.Now().After(deadline) {
-				return fmt.Errorf("flaky: simulated link drop")
+				return errFlakyDrop
 			}
 			err := tstream.Send(&pb.Telemetry{
 				RobotId: s.id, TsUnixMs: time.Now().UnixMilli(),
@@ -167,11 +176,15 @@ func session(ctx context.Context, addr string, s *sim, period time.Duration, fla
 	}
 }
 
+var errFlakyDrop = errors.New("flaky: simulated link drop")
+
 func main() {
 	id := flag.String("id", "r1", "robot id")
 	addr := flag.String("server", "localhost:9090", "fleet server gRPC address")
 	period := flag.Duration("period", time.Second, "telemetry period")
 	flaky := flag.Bool("flaky", false, "randomly drop the connection to exercise offline/recovery")
+	outage := flag.Duration("flaky-outage", 8*time.Second,
+		"with --flaky, how long the link stays down; keep it above the server --timeout so the robot is seen going offline")
 	flag.Parse()
 
 	s := &sim{id: *id, battery: 100, status: pb.RobotStatus_IDLE}
@@ -183,6 +196,13 @@ func main() {
 		// 오래 살았던 세션이면 백오프 리셋, 즉사 반복이면 지수 증가 (최대 8초)
 		if time.Since(start) > 30*time.Second {
 			backoff = 500 * time.Millisecond
+		}
+		if errors.Is(err, errFlakyDrop) {
+			// 백오프(0.5초)로 바로 붙으면 서버 판정 시간(5초)보다 짧아 오프라인이 한 번도
+			// 관측되지 않는다. 일부러 끊은 경우에는 장애 시간을 흉내 내 오래 쉰다.
+			log.Printf("[%s] simulated outage: staying offline for %s", s.id, *outage)
+			time.Sleep(*outage)
+			continue
 		}
 		time.Sleep(backoff)
 		if backoff < 8*time.Second {

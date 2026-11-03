@@ -34,9 +34,9 @@ flowchart LR
 ## Quickstart
 
 ```bash
-go run ./cmd/server &                  # gRPC :9090, HTTP :8080
+go run ./cmd/server &                  # gRPC 127.0.0.1:9090, HTTP 127.0.0.1:8080
 go run ./cmd/robot --id r1 &
-go run ./cmd/robot --id r2 --flaky &   # exercises offline/recovery on its own
+go run ./cmd/robot --id r2 --flaky &   # drops its link every 30–60s and stays down 8s (--flaky-outage)
 go run ./cmd/robot --id r3 &
 
 curl -s localhost:8080/fleet | python3 -m json.tool
@@ -51,7 +51,7 @@ Command verbs: `goto x,y` · `stop` · `charge` · `fault` (inject) · `clear_fa
 
 - **Transitions, not states.** The registry reports *changes* (came online, went offline) exactly once; steady heartbeats are silent. Alert spam is the fastest way to make an operator ignore a control tower.
 - **The server owns liveness.** A robot is offline when the server hasn't heard from it within the timeout — judged by a periodic sweep, so the answer is the same whether the robot crashed, lost network, or hung. (In the MQTT design this job belongs to the broker's LWT; here there is no broker, so the judgment moves into the registry.)
-- **Failure is visible at the call site.** Commanding an offline robot fails immediately with a reason (`409`), and a full per-robot buffer refuses new commands rather than queueing unboundedly. No fire-and-forget.
+- **Failure is visible at the call site, as far as the server can see.** Commanding an offline robot fails immediately with a reason (`409`), and a full per-robot buffer refuses new commands rather than queueing unboundedly. A `202` only means the command was handed to that robot's buffer: if the stream dies before delivery the command is lost, and the execution result (ACK, matched by `command_id`) currently shows up only in the server log. Storing ACKs behind `GET /command/{id}` is the next step (see the learning guide).
 - **Reconnect is the robot's default behavior.** Streams *will* drop; the client reconnects with exponential backoff (reset after a healthy session) and re-announces itself. A reconnect replaces a zombie stream server-side.
 - **Transport and model are separated.** `internal/fleet` (registry, hub) has no gRPC imports and is covered by table-driven tests; the gRPC layer is a thin adapter. Tests run with no network.
 
@@ -74,7 +74,7 @@ Practical conclusion: for daijin's portable speaker on LTE, the broker rendezvou
 
 - No path planning, no collision avoidance, no maps — `goto` moves a point in a straight line.
 - No real robots, no ROS. The simulator exists to exercise *fleet* behavior (disconnects, recovery, command routing), not robot behavior.
-- No persistence, no auth, no TLS. In-memory state, localhost trust.
+- No persistence, no auth, no TLS. In-memory state, localhost trust: both listeners bind to `127.0.0.1` by default; pass `-grpc :9090 -http :8080` to expose them on the LAN.
 
 ## Layout
 

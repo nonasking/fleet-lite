@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -85,9 +86,12 @@ func (s *server) CommandChannel(stream pb.FleetService_CommandChannelServer) err
 	}
 }
 
+var cmdSeq atomic.Uint64
+
 func main() {
-	grpcAddr := flag.String("grpc", ":9090", "gRPC listen address")
-	httpAddr := flag.String("http", ":8080", "HTTP listen address")
+	// 인증이 없으니 기본은 이 기기에서만 받는다. LAN에 열려면 -grpc :9090 -http :8080.
+	grpcAddr := flag.String("grpc", "127.0.0.1:9090", "gRPC listen address")
+	httpAddr := flag.String("http", "127.0.0.1:8080", "HTTP listen address")
 	timeout := flag.Duration("timeout", 5*time.Second, "offline judgment: max silence before a robot is marked offline")
 	flag.Parse()
 
@@ -137,11 +141,15 @@ func main() {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		cmd := &pb.Command{CommandId: fmt.Sprintf("c-%d", time.Now().UnixMilli()), Verb: req.Verb, Arg: req.Arg}
+		// 같은 밀리초에 두 요청이 오면 id가 겹치므로 순번을 붙인다.
+		cmd := &pb.Command{CommandId: fmt.Sprintf("c-%d-%d", time.Now().UnixMilli(), cmdSeq.Add(1)), Verb: req.Verb, Arg: req.Arg}
 		if err := s.hub.Send(req.RobotID, cmd); err != nil {
 			http.Error(w, err.Error(), 409) // 오프라인/버퍼포화 — 실패를 숨기지 않는다
 			return
 		}
+		// 202: 로봇의 명령 버퍼에 넣었다는 뜻이다. 실행 결과(ACK)는 서버 로그에 남는다.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
 		json.NewEncoder(w).Encode(map[string]string{"command_id": cmd.CommandId})
 	})
 
